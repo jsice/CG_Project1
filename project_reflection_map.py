@@ -159,8 +159,8 @@ def display():
     [-1,1,1],[-1,-1,1],[1,-1,1],[1,1,1], [-1,1,-1],[-1,-1,-1],[1,-1,-1],[1,1,-1]] 
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
     
-    e_pos = (20*cos(angle*pi/180), 0, 20*sin(angle*pi/180))
-    e_at = (-1,4,0)
+    e_pos = (20*cos(angle*pi/180), 3, 20*sin(angle*pi/180))
+    e_at = (-1,3,0)
    
     glUseProgram(0)
     glMatrixMode(GL_PROJECTION)
@@ -181,13 +181,11 @@ def display():
     glEnd()
 
     glUseProgram(prog_id) 
-    
-    
     proj_mat = Perspective(40., screenWidth/screenHeight, 0.01, 500.0)
     glUniformMatrix4fv(uniform_locs["proj_mat"], 1, True, proj_mat.A)
     view_mat = LookAt(*e_pos, *e_at, 0, 1, 0)
     glUniformMatrix4fv(uniform_locs["view_mat"], 1, True, view_mat.A)
-    model_mat =  Scale(4,4,4)
+    model_mat =  Scale(3,3,3)
     glUniformMatrix4fv(uniform_locs["model_mat"], 1, True, model_mat.A)
     
     glBindVertexArray(vao)
@@ -206,7 +204,7 @@ def main():
     glutInitWindowPosition(50, 50)    
     glutCreateWindow(b"Reflection map")
     glutDisplayFunc(display)
-    load_tri("models/ball.tri")
+    load_tri("models/horse.tri")
     glutIdleFunc(animate)
     glEnable(GL_DEPTH_TEST)
     init()
