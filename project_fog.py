@@ -6,15 +6,12 @@ from PIL import Image
 from numpy import *
 from gl_utils import *
 from math import *
-from ctypes import c_void_p
 
-prog_id, angle = 0, 0
-tex_id = None
 n_vertices, positions, normals, colors, uvs, centroid, vao, vbo = \
 0, None, None, None, None, None, None, None
 screenWidth, screenHeight = 800, 600
-
-render_program, shadow_program = 0, 0
+isReflect = True
+prog_id, prog_id_reflection, prog_id_fog, angle = 0, 0, 0, 0
 uniform_locs = {}
 
 
@@ -50,7 +47,120 @@ def compile_program(vertex_code, fragment_code):
 
     glLinkProgram(prog_id)
     print_program_info_log(prog_id, "Link error")
-    return prog_id  
+    return prog_id 
+    
+def init():
+    global  vao, vbo, prog_id, prog_id_reflection, prog_id_fog
+    cubemap()
+    vert_code = b'''
+#version 330
+uniform mat4 model_mat, view_mat, proj_mat;
+in vec3 vPos, vNor;
+out vec3 reflectDir;
+void main() {
+
+    gl_Position = proj_mat * view_mat * model_mat * vec4(vPos, 1);
+    mat4 adjunct_mat = transpose(inverse(model_mat));
+    vec3 P = (model_mat * vec4(vPos, 1)).xyz;
+    vec3 N = (adjunct_mat * vec4(vNor, 0)).xyz;
+    vec3 ePos = (inverse(view_mat) * vec4(0,0,0,1)).xyz;
+    reflectDir = reflect(normalize(P - ePos), N);
+    //reflectDir = refract(normalize(P - ePos), N, 1/1.5);
+}
+                '''
+    frag_code = b''' 
+#version 130
+uniform samplerCube cube_map;
+in vec3 reflectDir;
+out vec4 gl_FragColor;
+void main() {
+    gl_FragColor = mix(texture(cube_map, reflectDir), vec4(0,1,0,1), 0);
+}
+                '''          
+
+    prog_id_reflection = compile_program(vert_code, frag_code)
+    prog_id = prog_id_reflection
+    glUseProgram(prog_id)
+    getLocation(prog_id)
+    glBindVertexArray(0)
+    
+    
+    vert_code = b'''
+#version 330
+uniform mat4 model_mat, view_mat, proj_mat;
+in vec3 vPos, vNor, vCol;
+in vec2 vTex;
+out vec3 fPos, fNor, fCol;
+float max_distance = 55;
+out float Fog;
+void main() {
+    float distance = abs((view_mat * model_mat * vec4(vPos, 1)).z);
+    Fog = clamp(distance, 0, max_distance);
+    Fog = clamp((max_distance-Fog)/max_distance, 0, 1);
+    fPos = (model_mat * vec4(vPos, 1)).xyz;
+    gl_Position = proj_mat * view_mat * model_mat * vec4(vPos, 1);
+    mat4 adjunct_mat = transpose(inverse(model_mat));
+    fNor = (adjunct_mat * vec4(vNor, 0)).xyz;
+    fCol = vCol;
+}
+                '''
+    frag_code = b''' 
+#version 130
+vec4 fog_color = vec4(0.95, 1, 1, 1);
+in float Fog;
+vec3 ambient_color = vec3(0.15, 0.15, 0.15);
+uniform vec3 l_pos, l_dcol, l_scol, m_kd, m_ks;
+uniform float m_shininess;
+in vec3 e_pos, fPos, fCol, fNor;
+out vec4 gl_FragColor;
+void main() {
+    vec3 N = normalize(fNor);
+    vec3 L = normalize(l_pos - fPos);
+    float LdotN = max(0, dot(L, N));
+    vec3 color = fCol * l_dcol * LdotN;
+    vec3 V = normalize(e_pos - fPos);
+    vec3 H = normalize(L + V);
+    float HdotN = max(0, dot(H, N));
+    color += m_ks * l_scol * pow(HdotN, m_shininess);
+    color = clamp(color, 0, 1);
+    gl_FragColor = mix(fog_color, vec4(color, 1), Fog);
+}
+                '''
+    prog_id_fog = compile_program(vert_code, frag_code)
+    prog_id = prog_id_fog
+    glUseProgram(prog_id)
+    getLocation(prog_id)
+    glBindVertexArray(0)
+
+
+def getLocation(prog_id):
+    global model_mat, view_mat, proj_mat, m_shininess, l_pos, l_dcol, l_scol, m_kd, m_ks, vao, vbo
+    for name in ["model_mat", "view_mat", "proj_mat","cube_map","m_shininess","l_pos", "l_dcol", "l_scol", "m_kd", "m_ks"]:
+        uniform_locs[name] = glGetUniformLocation(prog_id, name)
+    
+    vao = glGenVertexArrays(1)
+    glBindVertexArray(vao)
+
+    vbo = glGenBuffers(3)
+    glBindBuffer(GL_ARRAY_BUFFER, vbo[0])
+    glBufferData(GL_ARRAY_BUFFER, positions, GL_DYNAMIC_DRAW)
+    location = glGetAttribLocation(prog_id, "vPos")
+    glVertexAttribPointer(location, 3, GL_FLOAT, GL_FALSE, 0, c_void_p(0))
+    glEnableVertexAttribArray(location)
+
+    glBindBuffer(GL_ARRAY_BUFFER, vbo[1])
+    glBufferData(GL_ARRAY_BUFFER, colors, GL_STATIC_DRAW)
+    location = glGetAttribLocation(prog_id, "vCol")
+    if location != -1:
+        glVertexAttribPointer(location, 3, GL_FLOAT, GL_FALSE, 0, c_void_p(0))
+        glEnableVertexAttribArray(location) 
+
+    glBindBuffer(GL_ARRAY_BUFFER, vbo[2])
+    glBufferData(GL_ARRAY_BUFFER, normals, GL_STATIC_DRAW)
+    location = glGetAttribLocation(prog_id, "vNor")
+    if location != -1:
+        glVertexAttribPointer(location, 3, GL_FLOAT, GL_FALSE, 0, c_void_p(0))
+        glEnableVertexAttribArray(location)
 
 def load_tri(filename):
     global n_vertices, positions, normals, uvs, colors
@@ -78,63 +188,6 @@ def load_tri(filename):
     # normals[:] = (normals+1)*0.5
     print("Loaded %d vertices" % n_vertices)
 
-   
-
-
-def init():
-    global  vao, vbo,prog_id
-    cubemap()
-    vert_code = b'''
-#version 330
-uniform mat4 model_mat, view_mat, proj_mat;
-in vec3 vPos, vNor;
-out vec3 reflectDir;
-void main() {
-
-    gl_Position = proj_mat * view_mat * model_mat * vec4(vPos, 1);
-    mat4 adjunct_mat = transpose(inverse(model_mat));
-    vec3 P = (model_mat * vec4(vPos, 1)).xyz;
-    vec3 N = (adjunct_mat * vec4(vNor, 0)).xyz;
-    vec3 ePos = (inverse(view_mat) * vec4(0,0,0,1)).xyz;
-    reflectDir = reflect(normalize(P - ePos), N);
-    //reflectDir = refract(normalize(P - ePos), N, 1/1.5);
-}
-                '''
-    frag_code = b''' 
-#version 130
-uniform samplerCube cube_map;
-in vec3 reflectDir;
-out vec4 gl_FragColor;
-void main() {
-    gl_FragColor = mix(texture(cube_map, reflectDir), vec4(0,1,0,1), 0);
-}
-                '''                
-    prog_id = compile_program(vert_code, frag_code)
-    glUseProgram(prog_id)
-    for name in ["model_mat", "view_mat", "proj_mat","cube_map"]:
-        uniform_locs[name] = glGetUniformLocation(prog_id, name)
-    
-    vao = glGenVertexArrays(1)
-    glBindVertexArray(vao)
-
-    vbo = glGenBuffers(2)
-    glBindBuffer(GL_ARRAY_BUFFER, vbo[0])
-    glBufferData(GL_ARRAY_BUFFER, positions, GL_DYNAMIC_DRAW)
-    location = glGetAttribLocation(prog_id, "vPos")
-    glVertexAttribPointer(location, 3, GL_FLOAT, GL_FALSE, 0, c_void_p(0))
-    glEnableVertexAttribArray(location)
-
-
-    glBindBuffer(GL_ARRAY_BUFFER, vbo[1])
-    glBufferData(GL_ARRAY_BUFFER, normals, GL_STATIC_DRAW)
-    location = glGetAttribLocation(prog_id, "vNor")
-    if location != -1:
-        glVertexAttribPointer(location, 3, GL_FLOAT, GL_FALSE, 0, c_void_p(0))
-        glEnableVertexAttribArray(location)    
-
-    glBindVertexArray(0)
- 
-
 def cubemap():
     global tex_id
     im = Image.open("cube_map/street_HCmap.jpg")
@@ -161,6 +214,7 @@ def display():
     
     e_pos = (20*cos(angle*pi/180), 3, 20*sin(angle*pi/180))
     e_at = (-1,3,0)
+    light_pos = (-10, 8, 10)
    
     glUseProgram(0)
     glMatrixMode(GL_PROJECTION)
@@ -170,23 +224,34 @@ def display():
     glLoadIdentity()
     gluLookAt(*e_pos, *e_at, 0, 1, 0)
     glScalef(50,50,50)
-
     # glRotatef(angle,0,1,0)
     glBegin(GL_QUADS)
     for vertex in vertices:
         texCoord = [-vertex[0]] + [vertex[1]] + [-vertex[2]]
         glTexCoord3fv(texCoord)
         glVertex3fv(vertex)
-
     glEnd()
 
-    glUseProgram(prog_id) 
+    if isReflect:
+        prog_id = prog_id_reflection
+    else:
+        prog_id = prog_id_fog
+
+    glUseProgram(prog_id)
+    getLocation(prog_id)
     proj_mat = Perspective(40., screenWidth/screenHeight, 0.01, 500.0)
     glUniformMatrix4fv(uniform_locs["proj_mat"], 1, True, proj_mat.A)
     view_mat = LookAt(*e_pos, *e_at, 0, 1, 0)
     glUniformMatrix4fv(uniform_locs["view_mat"], 1, True, view_mat.A)
     model_mat =  Scale(3,3,3)
     glUniformMatrix4fv(uniform_locs["model_mat"], 1, True, model_mat.A)
+
+    glUniform1f(uniform_locs["m_shininess"], 50)
+    glUniform3f(uniform_locs["l_pos"], *light_pos)
+    glUniform3f(uniform_locs["l_dcol"], 1,1,1)
+    glUniform3f(uniform_locs["l_scol"], 1,1,1)
+    glUniform3f(uniform_locs["m_kd"], 1,0,0)
+    glUniform3f(uniform_locs["m_ks"], 1,1,1)
     
     glBindVertexArray(vao)
     glDrawArrays(GL_TRIANGLES, 0, n_vertices)
@@ -197,6 +262,14 @@ def animate():
     angle = angle + 0.25
     glutPostRedisplay()
 
+def keyboard(key, x, y):
+    global isReflect
+    key = key.decode("utf-8")
+    if key == 'f':
+        isReflect = not isReflect
+    elif ord(key) == 27:
+        exit(0)
+
 def main():
     glutInit(sys.argv)
     glutInitDisplayMode(GLUT_RGB | GLUT_DOUBLE | GLUT_DEPTH)
@@ -204,6 +277,7 @@ def main():
     glutInitWindowPosition(50, 50)    
     glutCreateWindow(b"Reflection map")
     glutDisplayFunc(display)
+    glutKeyboardFunc(keyboard)
     load_tri("models/horse.tri")
     glutIdleFunc(animate)
     glEnable(GL_DEPTH_TEST)
