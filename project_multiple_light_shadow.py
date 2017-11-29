@@ -389,7 +389,8 @@ def main():
     glutCreateWindow(b"GLSL Example")
     glutDisplayFunc(display)
     glutKeyboardFunc(keyboard)
-    load_tri(sys.argv[1])
+    # load_tri(sys.argv[1])
+    load_tri("models\objects_and_walls.tri")
     init()
     glutMainLoop()
 
