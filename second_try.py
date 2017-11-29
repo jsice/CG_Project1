@@ -20,9 +20,10 @@ tex_id = {}
 shadow_FBO = {}
 isLight1Open = 0
 isLight2Open = 0
+isToon = True
 
 def keyboard(key, x, y):
-    global isLight1Open, isLight2Open
+    global isLight1Open, isLight2Open, isToon
 
     key = key.decode("utf-8")
     if key == '1':
@@ -31,6 +32,11 @@ def keyboard(key, x, y):
     elif key == '2':
         isLight2Open = 1 - isLight2Open
         glutPostRedisplay()
+    if key == 't':
+        isToon = not isToon
+        glutPostRedisplay()
+    elif ord(key) == 27:
+        exit(0)
 
 def print_shader_info_log(shader, prompt=""):
     result = glGetShaderiv(shader, GL_COMPILE_STATUS)
@@ -291,7 +297,101 @@ void main() {
         location = glGetAttribLocation(glsl_program["render_shadow"], "vNor")
         if location != -1:
             glVertexAttribPointer(location, 3, GL_FLOAT, GL_FALSE, 0, c_void_p(0))
-            glEnableVertexAttribArray(location) 
+            glEnableVertexAttribArray(location)
+
+        vert_code = b'''
+#version 330
+uniform mat4 model_mat, view_mat, proj_mat;
+in vec3 vPos, vNor;
+out vec3 e_pos, fPos, fNor, fCol;
+void main() {
+    float distance = abs((view_mat * model_mat * vec4(vPos, 1)).z);
+    fPos = (model_mat * vec4(vPos, 1)).xyz;
+    gl_Position = proj_mat * view_mat * model_mat * vec4(vPos, 1);
+    mat4 adjunct_mat = transpose(inverse(model_mat));
+    fNor = (adjunct_mat * vec4(vNor, 0)).xyz;
+    fCol = (vNor + 1) * 0.5;
+    e_pos = (inverse(view_mat) * vec4(0,0,0,1)).xyz;
+}
+                '''
+    frag_code = b''' 
+#version 130
+vec3 ambient_color = vec3(0.15, 0.15, 0.15);
+uniform vec3 l1_pos, l2_pos, l_dcol, l_scol, m_kd, m_ks;
+uniform float m_shininess;
+uniform int isLight1Open, isLight2Open;
+in vec3 e_pos, fPos, fCol, fNor;
+out vec4 gl_FragColor;
+vec3 diff_color1, diff_color2, spec_color1, spec_color2;
+void main() {
+    vec3 N = normalize(fNor);
+    vec3 L1 = normalize(l1_pos - fPos);
+    vec3 L2 = normalize(l2_pos - fPos);
+    float diffuse1 = max(0, dot(L1, N));
+    float diffuse2 = max(0, dot(L2, N));
+    vec3 V = normalize(e_pos - fPos);
+    vec3 H1 = normalize(L1 + V);
+    vec3 H2 = normalize(L2 + V);
+    float HdotN1 = max(0, dot(H1, N));
+    float HdotN2 = max(0, dot(H2, N));
+    float specular1 = pow(HdotN1, m_shininess);
+    float specular2 = pow(HdotN2, m_shininess);
+    if (diffuse1 == 0)
+        specular1 = 0.0;
+    if (diffuse2 == 0)
+        specular2 = 0.0;
+    float edge = max(dot(N, V), 0);
+
+    vec3 diff_color, spec_color;
+    if (diffuse1 > 0.5)
+        diff_color1 = fCol;
+    else
+        diff_color1 = 0.5*fCol;
+    if (diffuse2 > 0.5)
+        diff_color2 = fCol;
+    else
+        diff_color2 = 0.5*fCol;
+    
+    if (specular1 > 0.3)
+        spec_color1 = m_ks;
+    else
+        spec_color1 = vec3(0,0,0);
+    if (specular2 > 0.3)
+        spec_color2 = m_ks;
+    else
+        spec_color2 = vec3(0,0,0);
+
+    if (edge < 0.3)
+        edge = 0;
+    else
+        edge = 1;
+
+    vec3 color1 = edge * (diff_color1 + spec_color1) * fCol;
+    vec3 color2 = edge * (diff_color2 + spec_color2) * fCol;
+    vec3 color = (color1 * isLight1Open + color2 * isLight2Open) / (isLight1Open + isLight2Open) + ambient_color;
+    gl_FragColor = vec4(clamp(color, 0, 1),1);    
+}
+'''
+    glsl_program["toon"] = compile_program(vert_code, frag_code)
+    glUseProgram(glsl_program["toon"])
+    for name in ["model_mat", "view_mat", "proj_mat", "l1_pos", "l2_pos", "l_dcol", "l_scol", "m_kd", "m_ks", "m_shininess", "isLight1Open", "isLight2Open"]:
+        uniform_locs["toon_" + name] = glGetUniformLocation(glsl_program["toon"], name)
+    
+    glBindVertexArray(vao["ball"])
+
+    glBindBuffer(GL_ARRAY_BUFFER, vbo["ball"][0])
+    glBufferData(GL_ARRAY_BUFFER, positions["ball"], GL_DYNAMIC_DRAW)
+    location = glGetAttribLocation(glsl_program["toon"], "vPos")
+    glVertexAttribPointer(location, 3, GL_FLOAT, GL_FALSE, 0, c_void_p(0))
+    glEnableVertexAttribArray(location)
+
+    glBindBuffer(GL_ARRAY_BUFFER, vbo["ball"][1])
+    glBufferData(GL_ARRAY_BUFFER, normals["ball"], GL_STATIC_DRAW)
+    location = glGetAttribLocation(glsl_program["toon"], "vNor")
+    if location != -1:
+        glVertexAttribPointer(location, 3, GL_FLOAT, GL_FALSE, 0, c_void_p(0))
+        glEnableVertexAttribArray(location)
+
 
     vert_code = b'''
 #version 150
@@ -420,10 +520,12 @@ def display():
     glDrawArrays(GL_TRIANGLES, 0, n_vertices["ball"])
 
     #draw objects (room)
+    view_mat = value["view_mat"]
+
     glUseProgram(glsl_program["render_shadow"])
     model_mat = value["model_mat"] * Scale(50, 50, 50)
     glUniformMatrix4fv(uniform_locs["render_shadow_proj_mat"], 1, True, value["proj_mat"].A)
-    glUniformMatrix4fv(uniform_locs["render_shadow_view_mat"], 1, True, value["view_mat"].A)
+    glUniformMatrix4fv(uniform_locs["render_shadow_view_mat"], 1, True, view_mat.A)
     glUniformMatrix4fv(uniform_locs["render_shadow_model_mat"], 1, True, model_mat.A)
     glUniform1i(uniform_locs["render_shadow_cube_map"], 0)
     glUniform1i(uniform_locs["render_shadow_has_cube_map"], 1)
@@ -449,13 +551,29 @@ def display():
     glDrawArrays(GL_QUADS, 0, n_vertices["room"])
 
     #draw mirror ball
-    glUseProgram(glsl_program["reflection"])
-    model_mat = value["model_mat"] * Translate(10, -20, 10) * Scale(10, 10, 10)
-    glUniformMatrix4fv(uniform_locs["reflection_proj_mat"], 1, True, value["proj_mat"].A)
-    glUniformMatrix4fv(uniform_locs["reflection_view_mat"], 1, True, value["view_mat"].A)
-    glUniformMatrix4fv(uniform_locs["reflection_model_mat"], 1, True, model_mat.A)
-    glUniform1i(uniform_locs["reflection_cube_map"], 0)
-    glUniform3f(uniform_locs["reflection_ePos"], *value["e_pos"])
+    
+    if isToon:
+        prog_id = "reflection"
+        glUseProgram(glsl_program[prog_id])
+        model_mat = value["model_mat"] * Translate(10, -20, 10) * Scale(10, 10, 10)
+        glUniformMatrix4fv(uniform_locs["reflection_proj_mat"], 1, True, value["proj_mat"].A)
+        glUniformMatrix4fv(uniform_locs["reflection_view_mat"], 1, True, view_mat.A)
+        glUniformMatrix4fv(uniform_locs["reflection_model_mat"], 1, True, model_mat.A)
+        glUniform1i(uniform_locs["reflection_cube_map"], 0)
+        glUniform3f(uniform_locs["reflection_ePos"], *value["e_pos"])
+    else:
+        prog_id = "toon"
+        glUseProgram(glsl_program[prog_id])
+        model_mat = value["model_mat"] * Translate(10, -20, 10) * Scale(10, 10, 10)
+        glUniformMatrix4fv(uniform_locs["toon_proj_mat"], 1, True, value["proj_mat"].A)
+        glUniformMatrix4fv(uniform_locs["toon_view_mat"], 1, True, view_mat.A)
+        glUniformMatrix4fv(uniform_locs["toon_model_mat"], 1, True, model_mat.A)
+        for attrib in light_attrib:
+            glUniform3f(uniform_locs["toon_" + attrib], *value[attrib])
+        glUniform1i(uniform_locs["toon_isLight1Open"], isLight1Open)
+        glUniform1i(uniform_locs["toon_isLight2Open"], isLight2Open)
+        
+
     glBindVertexArray(vao["ball"])
     glDrawArrays(GL_TRIANGLES, 0, n_vertices["ball"])
 
