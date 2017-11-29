@@ -344,6 +344,7 @@ def display():
     
     glUniformMatrix4fv(uniform_locs["shadow_mat1"], 1, True, shadow_mat1.A)
     glUniformMatrix4fv(uniform_locs["shadow_mat2"], 1, True, shadow_mat2.A)
+    glBindTexture(GL_TEXTURE_2D, shadow_tex_id1)
     glUniform1i(uniform_locs["shadow_map1"], 0)
 
     glBindTexture(GL_TEXTURE_2D, shadow_tex_id2)
@@ -352,7 +353,6 @@ def display():
     glDrawBuffer(GL_BACK)
     glViewport(0, 0, screenWidth, screenHeight)
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
-    glBindTexture(GL_TEXTURE_2D, shadow_tex_id1)
     glBindVertexArray(vao[0])
     glDrawArrays(GL_TRIANGLES, 0, n_vertices)
 
