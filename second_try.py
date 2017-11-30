@@ -20,23 +20,78 @@ tex_id = {}
 shadow_FBO = {}
 isLight1Open = 0
 isLight2Open = 0
+isGlass = 0
 isToon = True
-
+angle, updown, walk = 0, 0, 0
+face = [[0,0,1],[1,0,0],[0,0,-1],[-1,0,0]]
+pos = [0, 0, 0]
 def keyboard(key, x, y):
-    global isLight1Open, isLight2Open, isToon
+    global isLight1Open, isLight2Open, isToon, angle, updown, walk, isGlass
 
     key = key.decode("utf-8")
     if key == '1':
         isLight1Open = 1 - isLight1Open
-        glutPostRedisplay()
     elif key == '2':
         isLight2Open = 1 - isLight2Open
-        glutPostRedisplay()
-    if key == 't':
+    elif key == 't':
         isToon = not isToon
-        glutPostRedisplay()
+    elif key == 'g':
+        isGlass = 1 - isGlass
+    elif key == 'a':
+        angle += 1
+        if angle > 3:
+            angle -= 4
+        move()
+    elif key == 'd':
+        angle -= 1
+        if angle < 0:
+            angle += 4
+        move()
+    elif key == 'w':
+        pos[0] += face[angle][0]
+        pos[1] += face[angle][1]
+        pos[2] += face[angle][2]
+        move()
+
+        # if -5 < walk <= 15:
+        #     walk -= 1
+        # else:
+        #     walk = -5
+    elif key == 's':
+        
+        pos[0] -= face[angle][0]
+        pos[1] -= face[angle][1]
+        pos[2] -= face[angle][2]
+        move()
+        # if -5 <= walk < 15:
+        #     walk += 1
+        # else:
+        #     walk = 15
+    elif key == 'z':
+        updown -= 1
+        if updown < -10:
+            updown = -10
+        move()
+    elif key == 'x':
+        updown += 1
+        if updown > 10:
+            updown = 10
+        move()
     elif ord(key) == 27:
         exit(0)
+    else:
+        return
+
+    glutPostRedisplay()
+
+def move():
+    value["e_pos"][0] = value["e_pos_base"][0] + pos[0]
+    value["e_pos"][1] = value["e_pos_base"][1] + pos[1]
+    value["e_pos"][2] = value["e_pos_base"][2] + pos[2]
+    value["e_at"][0] = value["e_pos"][0] + face[angle][0]
+    value["e_at"][1] = value["e_pos"][1] + face[angle][1] + updown
+    value["e_at"][2] = value["e_pos"][2] + face[angle][2]
+    value["view_mat"] = LookAt(*value["e_pos"], *value["e_at"], 0, 1, 0)
 
 def print_shader_info_log(shader, prompt=""):
     result = glGetShaderiv(shader, GL_COMPILE_STATUS)
@@ -71,6 +126,46 @@ def compile_program(vertex_code, fragment_code):
     glLinkProgram(prog_id)
     print_program_info_log(prog_id, "Link error")
     return prog_id  
+
+def load_obj(filename, name):
+    try:
+        f = open(filename, 'r')
+    except:
+        print("%s not found!" % filename)
+        exit(1)
+    lines = f.read().split('\n')
+    f.close()
+
+    pos = []
+    nor = []
+    fac = []
+
+    n_vertices[name] = 0
+    for line in lines:
+        if len(line) == 0 or line[0] == '#': continue
+        vals = line.split()
+        if vals[0] == 'v':
+            pos.append(vals[1:])
+        elif vals[0] == 'vn':
+            nor.append(vals[1:])
+        elif vals[0] == 'f':
+            fac += vals[1:]
+    n_vertices[name] = len(fac)
+    positions[name] = zeros((n_vertices_obj, 3), dtype=float32)
+    # colors[name] = zeros((n_vertices_obj, 3), dtype=float32)
+    normals[name] = zeros((n_vertices_obj, 3), dtype=float32)
+    uvs[name] = zeros((n_vertices_obj, 3), dtype=float32)
+
+    for f in fac:
+        vals = f.split('/')
+        positions[name][cnt] = pos[int(vals[0])-1]
+        normals[name][cnt] = nor[int(vals[2])-1]
+        # colors[name][cnt] = [1,0,0]
+        uvs[name][cnt] = pos[int(vals[0])-1]
+    model_name.append(name)
+    print("Loaded %d vertices" % n_vertices_obj)
+    vao[name] = glGenVertexArrays(1)
+    vbo[name] = glGenBuffers(4)
 
 def load_tri(filename, name):
     try:
@@ -165,34 +260,38 @@ void main() {
     vec3 N = normalize((adjunct_mat * vec4(vNor, 0)).xyz);
     vec3 I = normalize(P - ePos);
     reflectDir = reflect(I, N);
-    //refractDir = refract(I, N, 0.33);
+    refractDir = refract(I, N, 1./1.5);
 }
                 '''
     frag_code = b''' 
 #version 130
 uniform samplerCube cube_map;
 in vec3 reflectDir, refractDir;
+uniform int is_glass;
 out vec4 gl_FragColor;
 void main() {
     vec4 reflect_color = texture(cube_map, reflectDir);
-    //vec4 refract_color = texture(cube_map, refractDir);
-    //gl_FragColor = mix(reflect_color, refract_color, 0.8);
-    gl_FragColor = reflect_color;
+    if (is_glass == 1) {
+        vec4 refract_color = texture(cube_map, refractDir);
+        gl_FragColor = mix(reflect_color, refract_color, 0.8);
+    } else {
+        gl_FragColor = reflect_color;
+    }
 }
                 '''
     glsl_program["reflection"] = compile_program(vert_code, frag_code)
     glUseProgram(glsl_program["reflection"])
-    for name in ["model_mat", "view_mat", "proj_mat","cube_map", "ePos"]:
+    for name in ["model_mat", "view_mat", "proj_mat","cube_map", "ePos", "is_glass"]:
         uniform_locs["reflection_" + name] = glGetUniformLocation(glsl_program["reflection"], name)
 
-    glBindVertexArray(vao["ball"])
-    glBindBuffer(GL_ARRAY_BUFFER, vbo["ball"][0])
-    glBufferData(GL_ARRAY_BUFFER, positions["ball"], GL_DYNAMIC_DRAW)
+    glBindVertexArray(vao["horse"])
+    glBindBuffer(GL_ARRAY_BUFFER, vbo["horse"][0])
+    glBufferData(GL_ARRAY_BUFFER, positions["horse"], GL_DYNAMIC_DRAW)
     location = glGetAttribLocation(glsl_program["reflection"], "vPos")
     glVertexAttribPointer(location, 3, GL_FLOAT, GL_FALSE, 0, c_void_p(0))
     glEnableVertexAttribArray(location)
-    glBindBuffer(GL_ARRAY_BUFFER, vbo["ball"][1])
-    glBufferData(GL_ARRAY_BUFFER, normals["ball"], GL_STATIC_DRAW)
+    glBindBuffer(GL_ARRAY_BUFFER, vbo["horse"][1])
+    glBufferData(GL_ARRAY_BUFFER, normals["horse"], GL_STATIC_DRAW)
     location = glGetAttribLocation(glsl_program["reflection"], "vNor")
     if location != -1:
         glVertexAttribPointer(location, 3, GL_FLOAT, GL_FALSE, 0, c_void_p(0))
@@ -255,7 +354,7 @@ vec3 calculateLightFrom(vec3 pos, vec4 fSha, sampler2D shadow_map) {
     float HdotN = max(0, dot(H, N));
     vec3 specular = m_ks * l_scol * pow(HdotN, m_shininess);
     float visibility = 1.0;
-    float bias = 0.0005;
+    float bias = 0.0001;
     int i, j;
     for(i=-1; i<=1; i++)
         for(j=-1; j<=1; j++)
@@ -283,7 +382,7 @@ void main() {
     for name in ["model_mat", "view_mat", "proj_mat", "l1_pos", "l2_pos", "l_dcol", "l_scol", "m_kd", "m_ks", "m_shininess", "shadow_mat1", "shadow_mat2", "shadow_map1", "shadow_map2", "isLight1Open", "isLight2Open", "cube_map", "has_cube_map"]:
         uniform_locs["render_shadow_" + name] = glGetUniformLocation(glsl_program["render_shadow"], name)
 
-    for model in ["ball", "room"]:
+    for model in ["horse", "room"]:
         glBindVertexArray(vao[model])
 
         glBindBuffer(GL_ARRAY_BUFFER, vbo[model][0])
@@ -377,16 +476,16 @@ void main() {
     for name in ["model_mat", "view_mat", "proj_mat", "l1_pos", "l2_pos", "l_dcol", "l_scol", "m_kd", "m_ks", "m_shininess", "isLight1Open", "isLight2Open"]:
         uniform_locs["toon_" + name] = glGetUniformLocation(glsl_program["toon"], name)
     
-    glBindVertexArray(vao["ball"])
+    glBindVertexArray(vao["horse"])
 
-    glBindBuffer(GL_ARRAY_BUFFER, vbo["ball"][0])
-    glBufferData(GL_ARRAY_BUFFER, positions["ball"], GL_DYNAMIC_DRAW)
+    glBindBuffer(GL_ARRAY_BUFFER, vbo["horse"][0])
+    glBufferData(GL_ARRAY_BUFFER, positions["horse"], GL_DYNAMIC_DRAW)
     location = glGetAttribLocation(glsl_program["toon"], "vPos")
     glVertexAttribPointer(location, 3, GL_FLOAT, GL_FALSE, 0, c_void_p(0))
     glEnableVertexAttribArray(location)
 
-    glBindBuffer(GL_ARRAY_BUFFER, vbo["ball"][1])
-    glBufferData(GL_ARRAY_BUFFER, normals["ball"], GL_STATIC_DRAW)
+    glBindBuffer(GL_ARRAY_BUFFER, vbo["horse"][1])
+    glBufferData(GL_ARRAY_BUFFER, normals["horse"], GL_STATIC_DRAW)
     location = glGetAttribLocation(glsl_program["toon"], "vNor")
     if location != -1:
         glVertexAttribPointer(location, 3, GL_FLOAT, GL_FALSE, 0, c_void_p(0))
@@ -453,13 +552,14 @@ def init_texture():
     glBindFramebuffer(GL_FRAMEBUFFER, 0)
 
 def init_value():
-    value["e_pos"] = [-30, 0, 30]
-    value["e_at"] = [10, -20, 10]
+    value["e_pos_base"] = [0, 0, -40]
+    value["e_pos"] = [0, 0, -40]
+    value["e_at"] = [0, 0, 0]
     value["model_mat"] = Identity()
     value["view_mat"] = LookAt(*value["e_pos"], *value["e_at"], 0, 1, 0)
     value["proj_mat"] = Perspective(60, screenWidth/screenHeight, 0.1, 300)
-    value["l1_pos"] = [-30, 30, -40]
-    value["l2_pos"] = [30, 30, 40]
+    value["l1_pos"] = [-30, 50, -10]
+    value["l2_pos"] = [30, 50, -10]
     value["l_dcol"] = [0.5, 0.5, 0.5]
     value["l_scol"] = [0.5, 0.5, 0.5]
     value["m_kd"] = [1, 1, 1]
@@ -471,7 +571,7 @@ def display():
 
     #create texture for shadow_map1
     li_pos = value["l1_pos"]
-    li_at = value["e_at"]
+    li_at = [0, 0, 0]
     light_proj_mat = Perspective(90, screenWidth/screenHeight, 0.1, 300)
     light_view_mat = LookAt(*li_pos, *li_at, 0, 1, 0)
     model_mat = value["model_mat"]
@@ -488,15 +588,15 @@ def display():
     glUniformMatrix4fv(uniform_locs["shadow_MVP"], 1, True, MVP.A)
     glBindVertexArray(vao["room"])
     glDrawArrays(GL_QUADS, 0, n_vertices["room"])
-    model_mat = value["model_mat"] * Translate(10, -20, 10) * Scale(10, 10, 10)
+    model_mat = value["model_mat"] * Translate(0, -10, 0) * Scale(10, 10, 10)
     MVP = light_proj_mat * light_view_mat * model_mat
     glUniformMatrix4fv(uniform_locs["shadow_MVP"], 1, True, MVP.A)
-    glBindVertexArray(vao["ball"])
-    glDrawArrays(GL_TRIANGLES, 0, n_vertices["ball"])
+    glBindVertexArray(vao["horse"])
+    glDrawArrays(GL_TRIANGLES, 0, n_vertices["horse"])
 
     #create texture for shadow_map2
     li_pos = value["l2_pos"]
-    li_at = value["e_at"]
+    li_at = [0, 0, 0]
     light_proj_mat = Perspective(90, screenWidth/screenHeight, 0.1, 300)
     light_view_mat = LookAt(*li_pos, *li_at, 0, 1, 0)
     model_mat = value["model_mat"]
@@ -513,11 +613,11 @@ def display():
     glUniformMatrix4fv(uniform_locs["shadow_MVP"], 1, True, MVP.A)
     glBindVertexArray(vao["room"])
     glDrawArrays(GL_QUADS, 0, n_vertices["room"])
-    model_mat = value["model_mat"] * Translate(10, -20, 10) * Scale(10, 10, 10)
+    model_mat = value["model_mat"] * Translate(0, -10, 0) * Scale(10, 10, 10)
     MVP = light_proj_mat * light_view_mat * model_mat
     glUniformMatrix4fv(uniform_locs["shadow_MVP"], 1, True, MVP.A)
-    glBindVertexArray(vao["ball"])
-    glDrawArrays(GL_TRIANGLES, 0, n_vertices["ball"])
+    glBindVertexArray(vao["horse"])
+    glDrawArrays(GL_TRIANGLES, 0, n_vertices["horse"])
 
     #draw objects (room)
     view_mat = value["view_mat"]
@@ -550,21 +650,23 @@ def display():
     glBindVertexArray(vao["room"])
     glDrawArrays(GL_QUADS, 0, n_vertices["room"])
 
-    #draw mirror ball
+    #draw mirror horse
     
-    if isToon:
+    if not isToon:
         prog_id = "reflection"
         glUseProgram(glsl_program[prog_id])
-        model_mat = value["model_mat"] * Translate(10, -20, 10) * Scale(10, 10, 10)
+        model_mat = value["model_mat"] * Translate(0, -10, 0) * Scale(10, 10, 10)
         glUniformMatrix4fv(uniform_locs["reflection_proj_mat"], 1, True, value["proj_mat"].A)
         glUniformMatrix4fv(uniform_locs["reflection_view_mat"], 1, True, view_mat.A)
         glUniformMatrix4fv(uniform_locs["reflection_model_mat"], 1, True, model_mat.A)
         glUniform1i(uniform_locs["reflection_cube_map"], 0)
+        glUniform1i(uniform_locs["reflection_is_glass"], isGlass)
         glUniform3f(uniform_locs["reflection_ePos"], *value["e_pos"])
+
     else:
         prog_id = "toon"
         glUseProgram(glsl_program[prog_id])
-        model_mat = value["model_mat"] * Translate(10, -20, 10) * Scale(10, 10, 10)
+        model_mat = value["model_mat"] * Translate(0, -10, 0) * Scale(10, 10, 10)
         glUniformMatrix4fv(uniform_locs["toon_proj_mat"], 1, True, value["proj_mat"].A)
         glUniformMatrix4fv(uniform_locs["toon_view_mat"], 1, True, view_mat.A)
         glUniformMatrix4fv(uniform_locs["toon_model_mat"], 1, True, model_mat.A)
@@ -574,15 +676,15 @@ def display():
         glUniform1i(uniform_locs["toon_isLight2Open"], isLight2Open)
         
 
-    glBindVertexArray(vao["ball"])
-    glDrawArrays(GL_TRIANGLES, 0, n_vertices["ball"])
+    glBindVertexArray(vao["horse"])
+    glDrawArrays(GL_TRIANGLES, 0, n_vertices["horse"])
 
 
     # test light view
 
     # li_pos = value["l1_pos"]
     # li_at = value["e_at"]
-    # light_proj_mat = Perspective(90, screenWidth/screenHeight, 0.1, 200)
+    # light_proj_mat = Perspective(90, shadow_map_size/shadow_map_size, 0.1, 200)
     # light_view_mat = LookAt(*li_pos, *li_at, 0, 1, 0)
     # model_mat = value["model_mat"] * Scale(50, 50, 50)
     # glBindFramebuffer(GL_FRAMEBUFFER, 0)
@@ -594,11 +696,11 @@ def display():
     # glUniformMatrix4fv(uniform_locs["MVP1"], 1, True, MVP.A)
     # glBindVertexArray(vao["room"])
     # glDrawArrays(GL_QUADS, 0, n_vertices["room"])
-    # model_mat = value["model_mat"] * Translate(10, -20, 10) * Scale(10, 10, 10)
+    # model_mat = value["model_mat"] * Translate(0, 0, 0) * Scale(8, 8, 8)
     # MVP = light_proj_mat * light_view_mat * model_mat
     # glUniformMatrix4fv(uniform_locs["MVP1"], 1, True, MVP.A)
-    # glBindVertexArray(vao["ball"])
-    # glDrawArrays(GL_TRIANGLES, 0, n_vertices["ball"])
+    # glBindVertexArray(vao["horse"])
+    # glDrawArrays(GL_TRIANGLES, 0, n_vertices["horse"])
     
 
     glutSwapBuffers()
@@ -608,8 +710,8 @@ def init():
     glEnable(GL_TEXTURE_CUBE_MAP)
     glEnable(GL_TEXTURE_2D)
     load_tri("models/room2.tri", "room")
-    load_tri("models/ball.tri", "ball")
-    load_cube_map("cube_map/street_HCmap.jpg")
+    load_tri("models/horse.tri", "horse")
+    load_cube_map("cube_map/marriottmadisonwest_HCmap.jpg")
     init_texture()
     init_glsl()
     init_value()
